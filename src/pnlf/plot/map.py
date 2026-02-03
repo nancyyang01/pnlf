@@ -11,15 +11,13 @@ import matplotlib as mpl
 from matplotlib.pyplot import figure, show, savefig
 import matplotlib.pyplot as plt
 
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture
 from astropy.visualization import simple_norm
-
 
 import astropy.units as u
 from astropy.visualization import simple_norm
 
 from astropy.nddata import Cutout2D
-from photutils import CircularAperture         # define circular aperture
 
 from ..constants import tab10, single_column, two_column
 from .utils import create_RGB

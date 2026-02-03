@@ -40,11 +40,11 @@ def _plot_pnlf(data,mu,completeness,mask=None,binsize=0.4,mlow=None,mhigh=None,M
         mhigh = completeness+2
 
     bins = np.arange(mlow,mhigh,binsize)
-    hist, bins  = np.histogram(data[~mask],bins,normed=False)
+    hist, bins  = np.histogram(data[~mask],bins)
 
     # we need to extend the bins
     bins_OL = np.arange(mlow-binsize*np.ceil((mlow-np.min(data))/binsize),mhigh,binsize)
-    hist_OL, _  = np.histogram(data[mask],bins_OL,normed=False)
+    hist_OL, _  = np.histogram(data[mask],bins_OL)
     m_OL = (bins_OL[1:]+bins_OL[:-1]) / 2
 
     err = np.sqrt(hist)
@@ -55,7 +55,7 @@ def _plot_pnlf(data,mu,completeness,mask=None,binsize=0.4,mlow=None,mhigh=None,M
     binsize_fine = 0.01
     bins_fine = np.arange(mlow-binsize_fine,mhigh+binsize_fine,binsize_fine)
     m_fine = (bins_fine[1:]+bins_fine[:-1]) /2
-    #hist_fine, _ = np.histogram(data[~mask],bins_fine,normed=False)
+    #hist_fine, _ = np.histogram(data[~mask],bins_fine)
 
     if not ax:
         # create an empty figure
@@ -113,7 +113,7 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
     if not mhigh:
         mhigh = completeness+2
     
-    hist, bins  = np.histogram(data,np.arange(mlow,mhigh,binsize),normed=False)
+    hist, bins  = np.histogram(data,np.arange(mlow,mhigh,binsize))
     err = np.sqrt(hist)
     # midpoint of the bins is used as position for the plots
     m = (bins[1:]+bins[:-1]) / 2
@@ -122,7 +122,7 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
     binsize_fine = 0.05
     bins_fine = np.arange(mlow,mhigh,binsize_fine)
     m_fine = (bins_fine[1:]+bins_fine[:-1]) /2
-    hist_fine, _ = np.histogram(data,bins_fine,normed=False)
+    hist_fine, _ = np.histogram(data,bins_fine)
 
     if not ax:
         # create an empty figure
@@ -206,10 +206,10 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
         fig = figure(figsize=(two_column,two_column/2))
         ax1 = fig.add_subplot(1,2,1)
         ax2 = fig.add_subplot(1,2,2)
-        ax1.set_xlabel(r'$m_{[\mathrm{O}\,\tiny{\textsc{iii}}]}$ / mag')
+        ax1.set_xlabel(r'$m_{[\mathrm{O}\,iii]}$ / mag')
         ax1.set_ylabel(r'$N$')
 
-        ax2.set_xlabel(r'$m_{[\mathrm{O}\,\tiny{\textsc{iii}}]}$ / mag')
+        ax2.set_xlabel(r'$m_{[\mathrm{O}\,iii]}$ / mag')
         ax2.set_ylabel(r'Cumulative N')
 
     else:
@@ -297,8 +297,8 @@ def plot_emission_line_ratio(table,mu=None,completeness=None,filename=None):
     ax1.set(xlim=[-5,np.ceil(completeness-mu)-0.7],
            ylim=[0.03,200],
            yscale='log',
-           xlabel=r'$M_{[\mathrm{O}\,\tiny{\textsc{iii}}]}$',
-           ylabel=r'$I_{[\mathrm{O}\,\tiny{\textsc{iii}}]} \; /\;(I_{\mathrm{H}\,\alpha+{[\mathrm{N}\,\tiny{\textsc{ii}}]}})$'
+           xlabel=r'$M_{[\mathrm{O}\,iii]}$',
+           ylabel=r'$I_{[\mathrm{O}\,iii]} \; /\;(I_{\mathrm{H}\,\alpha+{[\mathrm{N}\,ii}]})$'
            )
 
     
@@ -309,13 +309,13 @@ def plot_emission_line_ratio(table,mu=None,completeness=None,filename=None):
         xlim1,xlim2 = ax1.get_xlim()
         ax1t.set_xticks(np.arange(np.ceil(xlim1+mu),np.floor(xlim2+mu)+1),minor=False)
         ax1t.set(xlim   = [xlim1+mu,xlim2+mu],
-                xlabel = r'$m_{[\mathrm{O}\,\tiny{\textsc{iii}}]}$'
+                xlabel = r'$m_{[\mathrm{O}\,iii}]$'
                 )
 
     # ------------------------------------------------
     # middle plot Ha/[NII] over Ha/[SII]
     # ------------------------------------------------
-    legend_label = {'HII':r'H\,\textsc{ii}'}
+    legend_label = {'HII':r'H\,ii'}
     for t in ['HII','SNR','PN']:
         tbl = table[(table['type']==t) & (table['HA6562_detection'] | table['HA6562_detection'])]
 
@@ -357,8 +357,8 @@ def plot_emission_line_ratio(table,mu=None,completeness=None,filename=None):
     ax2.set(xlim=[-1.5,1],
            ylim=[-1.5,1],
            #yscale='log',
-           xlabel=r'$\log_{10} \left(I_{[\mathrm{S}\,\tiny{\textsc{ii}}]} \; /\; I_{\mathrm{H}\,\alpha} \right)$',
-           ylabel=r'$\log_{10} (I_{[\mathrm{N}\,\tiny{\textsc{ii}}]} \; /\; I_{\mathrm{H}\,\alpha})$'
+           xlabel=r'$\log_{10} \left(I_{[\mathrm{S}\,]} \; /\; I_{\mathrm{H}\,\alpha} \right)$',
+           ylabel=r'$\log_{10} (I_{[\mathrm{N}\,ii]} \; /\; I_{\mathrm{H}\,\alpha})$'
            )    
     ax2.xaxis.set_major_locator(mpl.ticker.MultipleLocator(0.5))
     ax2.yaxis.set_major_locator(mpl.ticker.MultipleLocator(0.5))

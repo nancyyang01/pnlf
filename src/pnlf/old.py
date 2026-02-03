@@ -15,11 +15,12 @@ if __name__ == '__main__':
 # ---------------------------------------------------------------------
 
 from collections import OrderedDict
-from photutils.datasets import (make_random_gaussians_table,
-                                make_noise_image,
-                                make_gaussian_sources_image)
+# from photutils.datasets import (make_random_gaussians_table, 
+#                                 make_noise_image,
+#                                 make_gaussian_sources_image)### EDITED by Nancy because other two functions are not found
+from photutils.datasets import (make_noise_image)
 
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture # EDITED by Nancy 
 from astropy.stats import gaussian_sigma_to_fwhm
 
 from astropy.visualization import simple_norm
@@ -129,7 +130,7 @@ def run_test_dectecion():
 # search for sources in old line maps (from Kreckel et al. 2017)
 # ---------------------------------------------------------------------
 
-from photutils import find_peaks
+from photutils.detection import find_peaks ## EDITED by Nancy
 
 def search_in_old():
     data_folder = os.path.join('d',os.sep,'downloads','MUSEDAP')
