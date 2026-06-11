@@ -16,7 +16,7 @@ import astropy.units as u
 
 from scipy.stats import kstest
 
-from ..analyse import PNLF, cdf
+from ..analyse import PNLF, cdf, pnlf_convolved
 
 basedir = Path(__file__).parent.parent.parent.parent
 logger = logging.getLogger(__name__)
@@ -98,7 +98,8 @@ def _plot_pnlf(data,mu,completeness,mask=None,binsize=0.4,mlow=None,mhigh=None,M
     return ax
 
 
-def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,Mmax=-4.47,color=tab10[0],alpha=1,ms=2,ax=None):
+def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,Mmax=-4.47,color=tab10[0],alpha=1,ms=2,ax=None,
+                   mock_magnitude=None,recovery_rate=None,sigma=None,convolved_color='tab:green',convolved_ls='-'):
     '''Plot cumulative PNLF
 
     this function plots a minimalistic cumulative PNLF (without labels etc.)
@@ -135,7 +136,27 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
     data.sort()
 
     # old version with binned cdf
-    ax.plot(m_fine[m_fine<completeness],N*cdf(m_fine[m_fine<completeness],mu,completeness),ls=':',color='k')
+    ax.plot(m_fine[m_fine<completeness],N*cdf(m_fine[m_fine<completeness],mu,completeness),ls=':',color='k',label='original cumulative PNLF')
+
+    if mock_magnitude is not None and recovery_rate is not None:
+        pdf = pnlf_convolved(
+            m_fine,
+            mu=mu,
+            mhigh=completeness,
+            mock_magnitude=mock_magnitude,
+            recovery_rate=recovery_rate,
+            Mmax=Mmax,
+            sigma=sigma,
+            normalize=False,
+        )
+        cdf_conv = np.cumsum(pdf) * binsize_fine
+        ax.plot(
+            m_fine[m_fine<completeness],
+            N * cdf_conv[m_fine<completeness],
+            ls=convolved_ls,
+            color=convolved_color,
+            label='convolved cumulative PNLF',
+        )
     #ax.plot(data[data<completeness],N*cdf(data[data<completeness],mu,completeness),ls=':',color='k')
 
     if binsize:
@@ -172,7 +193,10 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
     return ax
 
 def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,Mmax=-4.47,
-              filename=None,color='tab:red',alpha=1,axes=None):
+              filename=None,color='tab:red',alpha=1,axes=None,
+              mock_magnitude=None,recovery_rate=None,sigma=None,
+              convolved_color='tab:green',convolved_ls='-',
+              convolved_cum_color='tab:green',convolved_cum_ls='-'):
     '''Plot Planetary Nebula Luminosity Function
     
     
@@ -220,7 +244,48 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
         mask = np.zeros_like(data,dtype=bool)
 
     ax1 = _plot_pnlf(data,mu,completeness,mask=mask,binsize=binsize,mlow=mlow,mhigh=mhigh,Mmax=Mmax,color=color,alpha=alpha,ax=ax1,ms=2)
-    ax2 = _plot_cum_pnlf(data[~mask],mu,completeness,binsize=None,mlow=mlow,mhigh=mhigh,Mmax=Mmax,color=color,alpha=alpha,ax=ax2,ms=0.5)
+
+    if mock_magnitude is not None and recovery_rate is not None:
+        if mlow is None:
+            mlow = Mmax + mu
+        if mhigh is None:
+            mhigh = completeness + 2
+
+        binsize_fine = 0.01
+        bins_fine = np.arange(mlow-binsize_fine,mhigh+binsize_fine,binsize_fine)
+        m_fine = (bins_fine[1:]+bins_fine[:-1]) /2
+
+        N = len(data[data<completeness])-np.sum(mask)
+        convolved = pnlf_convolved(
+            m_fine,
+            mu=mu,
+            mhigh=completeness,
+            mock_magnitude=mock_magnitude,
+            recovery_rate=recovery_rate,
+            Mmax=Mmax,
+            sigma=sigma,
+            normalize=False,
+        )
+        ax1.plot(m_fine,binsize*N*convolved,c=convolved_color,ls=convolved_ls,label='convolved fit')
+
+    ax2 = _plot_cum_pnlf(
+        data[~mask],
+        mu,
+        completeness,
+        binsize=None,
+        mlow=mlow,
+        mhigh=mhigh,
+        Mmax=Mmax,
+        color=color,
+        alpha=alpha,
+        ax=ax2,
+        ms=0.5,
+        mock_magnitude=mock_magnitude,
+        recovery_rate=recovery_rate,
+        sigma=sigma,
+        convolved_color=convolved_cum_color,
+        convolved_ls=convolved_cum_ls,
+    )
 
     plt.tight_layout()
 
@@ -230,6 +295,133 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
         pass
 
     return (ax1,ax2)
+
+
+def plot_pnlf_diagnostic(data, mu, completeness, mock_magnitude, recovery_rate,
+                         mask=None, binsize=0.25, mlow=None, mhigh=None, Mmax=-4.47,
+                         sigma=None, filename=None, color='tab:red', alpha=1,
+                         convolved_color='tab:green', convolved_ls='-',
+                         raw_mock_magnitude=None, raw_recovery_rate=None):
+    '''Diagnostic plot showing completeness versus magnitude and the PNLF overlay.'''
+
+    if mask is None:
+        mask = np.zeros_like(data, dtype=bool)
+
+    if mlow is None:
+        mlow = Mmax + mu
+    if mhigh is None:
+        mhigh = completeness + 2
+
+    data = np.asarray(data)
+    mock_magnitude = np.asarray(mock_magnitude)
+    recovery_rate = np.asarray(recovery_rate)
+    if raw_mock_magnitude is not None and raw_recovery_rate is not None:
+        raw_mock_magnitude = np.asarray(raw_mock_magnitude)
+        raw_recovery_rate = np.asarray(raw_recovery_rate)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2,
+        1,
+        figsize=(two_column, two_column),
+        sharex=False,
+        gridspec_kw={'height_ratios': [1, 1.4]},
+    )
+
+    order = np.argsort(mock_magnitude)
+    mock_magnitude = mock_magnitude[order]
+    recovery_rate = np.clip(recovery_rate[order], 0, 1)
+
+    if raw_mock_magnitude is not None and raw_recovery_rate is not None:
+        raw_order = np.argsort(raw_mock_magnitude)
+        raw_mock_magnitude = raw_mock_magnitude[raw_order]
+        raw_recovery_rate = np.clip(raw_recovery_rate[raw_order], 0, 1)
+        ax1.scatter(raw_mock_magnitude, raw_recovery_rate, s=14, color='0.7', alpha=0.55, label='raw recovery')
+        ax1.plot(raw_mock_magnitude, raw_recovery_rate, color='0.7', lw=0.9, alpha=0.55)
+
+    ax1.scatter(mock_magnitude, recovery_rate, s=18, color='tab:blue', alpha=0.8, label='mock recovery')
+    ax1.plot(mock_magnitude, recovery_rate, color='tab:blue', lw=1)
+    ax1.axvline(completeness, ls='--', color='red', lw=0.8, alpha=0.7, label='completeness limit')
+    ax1.set_ylabel('Recovery fraction')
+    ax1.set_ylim(-0.05, 1.05)
+    ax1.legend(loc='best')
+
+    N = len(data[data < completeness]) - np.sum(mask)
+    binsize_fine = 0.01
+    bins_fine = np.arange(mlow - binsize_fine, mhigh + binsize_fine, binsize_fine)
+    m_fine = (bins_fine[1:] + bins_fine[:-1]) / 2
+    bins = np.arange(mlow, mhigh, binsize)
+    hist, bins = np.histogram(data[~mask], bins)
+    err = np.sqrt(hist)
+    m = (bins[1:] + bins[:-1]) / 2
+
+    # ax2.errorbar(
+    #     m[m < completeness],
+    #     hist[m < completeness],
+    #     yerr=err[m < completeness],
+    #     xerr=binsize / 2,
+    #     marker='o',
+    #     ms=4,
+    #     mec=color,
+    #     mfc=color,
+    #     ls='none',
+    #     ecolor=color,
+    #     alpha=alpha,
+    #     label='data above completeness',
+    # )
+    # if np.any(m >= completeness):
+    #     ax2.errorbar(
+    #         m[m >= completeness],
+    #         hist[m >= completeness],
+    #         yerr=err[m >= completeness],
+    #         xerr=binsize / 2,
+    #         marker='o',
+    #         ms=4,
+    #         mec=color,
+    #         mfc='white',
+    #         ls='none',
+    #         ecolor=color,
+    #         alpha=alpha,
+    #         label='data below completeness',
+    #     )
+
+    ax2.plot(
+        m_fine,
+        binsize / binsize_fine * N * PNLF(bins_fine, mu=mu, mhigh=completeness, Mmax=Mmax),
+        c='black',
+        ls='dotted',
+        label='original PNLF',
+    )
+
+    ax2.plot(
+        m_fine,
+        binsize * N * pnlf_convolved(
+            m_fine,
+            mu=mu,
+            mhigh=completeness,
+            mock_magnitude=mock_magnitude,
+            recovery_rate=recovery_rate,
+            Mmax=Mmax,
+            sigma=sigma,
+            normalize=False,
+        ),
+        c=convolved_color,
+        ls=convolved_ls,
+        label='convolved PNLF',
+    )
+
+    ax2.axvline(completeness, ls='--', alpha=0.5, color='red')
+    ax2.set_xlim(np.min(data) - 0.5, mhigh + 0.5)
+    ax2.set_yscale('log')
+    ax2.set_xlabel(r'$m_{5007}$')
+    ax2.set_ylabel('N')
+    ax2.legend(loc='best')
+
+    plt.tight_layout()
+
+    if filename:
+        savefig(filename.with_suffix('.pdf'), bbox_inches='tight')
+
+    return fig, (ax1, ax2)
 
 
 

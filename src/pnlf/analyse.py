@@ -181,10 +181,10 @@ class MaximumLikelihood1D:
     '''
     
     def __init__(self,func,data,err=None,prior=None,method='Nelder-Mead',**kwargs):
-        
+       
         #if len(signature(func).parameters)-len(kwargs)!=2:
         #    raise ValueError(f'`func` must have at least one free argument')
-        self.func = func
+        self.func = func # pnlf or pnlf_convolved
 
         logger.info(f'initialize fitter with {len(data)} data points')
         self.data   = data
@@ -375,6 +375,340 @@ def pnlf(m,mu,mhigh,Mmax=-4.47):
     out = normalization * np.exp(0.307*(m-mu)) * (1-np.exp(3*(Mmax-m+mu)))
     out[(m>mhigh) | (m<mlow)] = 0
     
+    return out
+
+
+def completeness_from_mock(m, mock_magnitude, recovery_rate):
+    '''Evaluate recovery rate from mock-injection data or a callable model.
+
+    Parameters
+    ----------
+    m : ndarray
+        Magnitudes where the completeness should be evaluated.
+    mock_magnitude : ndarray
+        Magnitude grid from mock sources.
+    recovery_rate : ndarray
+        Recovered fraction at ``mock_magnitude``.
+    '''
+
+    m = np.atleast_1d(m)
+
+    if callable(recovery_rate):
+        return np.clip(np.asarray(recovery_rate(m), dtype=float), 0, 1)
+
+    mock_magnitude = np.asarray(mock_magnitude)
+    recovery_rate = np.asarray(recovery_rate)
+
+    if mock_magnitude.ndim != 1 or recovery_rate.ndim != 1:
+        raise ValueError('mock_magnitude and recovery_rate must be one-dimensional arrays')
+    if len(mock_magnitude) != len(recovery_rate):
+        raise ValueError('mock_magnitude and recovery_rate must have the same length')
+
+    order = np.argsort(mock_magnitude)
+    x = mock_magnitude[order]
+    y = np.clip(recovery_rate[order], 0, 1)
+
+    return np.interp(m, x, y, left=y[0], right=y[-1])
+
+
+def smooth_recovery_curve(mock_magnitude, recovery_rate, recovery_err, lines=3):
+    '''Fit a weighted piecewise-linear recovery trend in magnitude space.
+
+    The recovery fraction is often close to a number of straight lines with
+    negative slope, so we identify turning points by recursively splitting the
+    magnitude range and fitting a weighted line to each segment. The returned
+    object is a callable that can be passed directly to
+    ``completeness_from_mock``. Adjacent segments are anchored so the final
+    curve is continuous at the split points.
+
+    Parameters
+    ----------
+    mock_magnitude : ndarray
+        Magnitude grid from mock sources.
+    recovery_rate : ndarray
+        Recovered fraction at ``mock_magnitude``.
+    recovery_err : ndarray
+        Uncertainties on the recovered fraction, likely binomial errors.
+    lines : int
+        Number of linear segments to fit.
+
+    Returns
+    -------
+    callable
+        Piecewise-linear recovery function clipped to the fitted ranges.
+    '''
+
+    mock_magnitude = np.asarray(mock_magnitude, dtype=float).ravel()
+    recovery_rate = np.asarray(recovery_rate, dtype=float).ravel()
+    recovery_err = np.asarray(recovery_err, dtype=float).ravel()
+
+    if mock_magnitude.ndim != 1 or recovery_rate.ndim != 1 or recovery_err.ndim != 1:
+        raise ValueError('mock_magnitude, recovery_rate and recovery_err must be one-dimensional arrays')
+    if len(mock_magnitude) != len(recovery_rate) or len(mock_magnitude) != len(recovery_err):
+        raise ValueError('mock_magnitude, recovery_rate and recovery_err must have the same length')
+    if len(mock_magnitude) == 0:
+        raise ValueError('mock_magnitude cannot be empty')
+
+    finite = np.isfinite(mock_magnitude) & np.isfinite(recovery_rate) & np.isfinite(recovery_err)
+    if not np.any(finite):
+        raise ValueError('No finite values available to fit a recovery curve')
+
+    x = mock_magnitude[finite]
+    y = np.clip(recovery_rate[finite], 0.0, 1.0)
+    err = recovery_err[finite]
+    err = np.where(np.isfinite(err) & (err > 0), err, np.nan)
+    if np.all(np.isnan(err)):
+        err = np.ones_like(y)
+    else:
+        err = np.where(np.isnan(err), np.nanmedian(err[np.isfinite(err)]), err)
+        err = np.clip(err, np.nanmin(err[np.isfinite(err)]), None)
+
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    err = err[order]
+
+    def weighted_line_fit(x_seg, y_seg, err_seg, x_anchor=None, y_anchor=None):
+        if len(x_seg) == 1:
+            return 0.0, float(y_seg[0])
+        weights = 1.0 / np.clip(err_seg, 1e-6, None)
+
+        if x_anchor is None or y_anchor is None:
+            slope, intercept = np.polyfit(x_seg, y_seg, 1, w=weights)
+            return float(slope), float(intercept)
+
+        dx = x_seg - float(x_anchor)
+        denom = np.sum(weights * dx * dx)
+        if denom <= 0:
+            return 0.0, float(y_anchor)
+
+        slope = np.sum(weights * dx * (y_seg - float(y_anchor))) / denom
+        intercept = float(y_anchor) - float(slope) * float(x_anchor)
+        return float(slope), float(intercept)
+
+    def weighted_sse(x_seg, y_seg, err_seg, slope, intercept):
+        model = slope * x_seg + intercept
+        resid = (y_seg - model) / np.clip(err_seg, 1e-6, None)
+        return float(np.sum(resid ** 2))
+
+    def segment_cost(start, stop):
+        x_seg = x[start:stop]
+        y_seg = y[start:stop]
+        err_seg = err[start:stop]
+        slope, intercept = weighted_line_fit(x_seg, y_seg, err_seg)
+        return weighted_sse(x_seg, y_seg, err_seg, slope, intercept), slope, intercept
+
+    segments = [(0, len(x))]
+    target_segments = max(1, int(lines))
+
+    while len(segments) < target_segments:
+        best_gain = 0.0
+        best_split = None
+        best_split_idx = None
+
+        for seg_idx, (start, stop) in enumerate(segments):
+            if stop - start < 4:
+                continue
+
+            total_cost, _, _ = segment_cost(start, stop)
+            for split in range(start + 2, stop - 1):
+                left_cost, _, _ = segment_cost(start, split)
+                right_cost, _, _ = segment_cost(split, stop)
+                gain = total_cost - (left_cost + right_cost)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_split = (start, split, stop)
+                    best_split_idx = seg_idx
+
+        if best_split is None or best_gain <= 0:
+            break
+
+        start, split, stop = best_split
+        segments = segments[:best_split_idx] + [(start, split), (split, stop)] + segments[best_split_idx + 1 :]
+
+    # Shared boundaries are placed halfway between adjacent samples, so two
+    # neighboring segments touch at the exact same x value when plotted.
+    segment_edges = [float(x[0])]
+    for left_seg, right_seg in zip(segments[:-1], segments[1:]):
+        left_stop = left_seg[1] - 1
+        right_start = right_seg[0]
+        segment_edges.append(float(0.5 * (x[left_stop] + x[right_start])))
+    segment_edges.append(float(x[-1]))
+
+    fitted_segments = []
+    previous_segment = None
+    for segment_index, (start, stop) in enumerate(segments):
+        start_edge = segment_edges[segment_index]
+        stop_edge = segment_edges[segment_index + 1]
+
+        if segment_index == 0:
+            slope, intercept = weighted_line_fit(x[start:stop], y[start:stop], err[start:stop])
+        else:
+            x_anchor = start_edge
+            y_anchor = previous_segment['slope'] * x_anchor + previous_segment['intercept']
+            slope, intercept = weighted_line_fit(
+                x[start:stop],
+                y[start:stop],
+                err[start:stop],
+                x_anchor=x_anchor,
+                y_anchor=y_anchor,
+            )
+
+        current_segment = {
+            'start': float(start_edge),
+            'stop': float(stop_edge),
+            'slope': slope,
+            'intercept': intercept,
+        }
+        fitted_segments.append(current_segment)
+        previous_segment = current_segment
+
+    def recovery_fn(m):
+        scalar_input = np.isscalar(m)
+        m = np.atleast_1d(np.asarray(m, dtype=float))
+        out = np.empty_like(m, dtype=float)
+
+        if len(fitted_segments) == 1:
+            seg = fitted_segments[0]
+            out[:] = seg['slope'] * m + seg['intercept']
+        else:
+            first = fitted_segments[0]
+            out[m <= first['start']] = first['slope'] * m[m <= first['start']] + first['intercept']
+
+            for seg_index, seg in enumerate(fitted_segments):
+                if seg_index == len(fitted_segments) - 1:
+                    mask = (m >= seg['start']) & (m <= seg['stop'])
+                else:
+                    mask = (m >= seg['start']) & (m < seg['stop'])
+                if np.any(mask):
+                    out[mask] = seg['slope'] * m[mask] + seg['intercept']
+
+            last = fitted_segments[-1]
+            out[m >= last['stop']] = last['slope'] * m[m >= last['stop']] + last['intercept']
+
+        out = np.clip(out, 0.0, 1.0)
+        if scalar_input:
+            return float(out[0])
+        return out
+
+    recovery_fn.segments = fitted_segments
+    recovery_fn.x_range = (float(x[0]), float(x[-1]))
+    recovery_fn.lines = len(fitted_segments)
+
+    return recovery_fn
+
+
+def pnlf_with_completeness(m, mu, mhigh, mock_magnitude, recovery_rate, Mmax=-4.47, normalize=True):
+    '''PNLF multiplied by interpolated recovery rate.
+
+    This is the no-photometric-scatter approximation.
+    '''
+
+    m = np.atleast_1d(m)
+    intrinsic = pnlf(m, mu, mhigh, Mmax=Mmax)
+    completeness = completeness_from_mock(m, mock_magnitude, recovery_rate)
+    out = intrinsic * completeness
+
+    if normalize:
+        mlow = mu + Mmax
+        grid = np.linspace(mlow, mhigh, 2000)
+        norm = np.trapz(
+            pnlf(grid, mu, mhigh, Mmax=Mmax)
+            * completeness_from_mock(grid, mock_magnitude, recovery_rate),
+            grid,
+        )
+        if norm > 0:
+            out = out / norm
+        else:
+            out = np.zeros_like(out)
+
+    return out
+
+
+def pnlf_convolved(
+    m_obs,
+    mu,
+    mhigh,
+    mock_magnitude,
+    recovery_rate,
+    Mmax=-4.47,
+    sigma=None,
+    sigma_mag=None,
+    grid_size=2000,
+    normalize=True,
+):
+    '''Observed PNLF after completeness convolution and optional error convolution.
+
+    Parameters
+    ----------
+    m_obs : ndarray
+        Observed magnitudes where the model is evaluated.
+    mu : float
+        Distance modulus.
+    mhigh : float
+        Faint-end limit used for intrinsic PNLF normalization.
+    mock_magnitude, recovery_rate : ndarray
+        Mock-injection completeness data used for interpolation.
+    sigma : None, float, callable, or ndarray
+        Photometric uncertainty model. If ``None``, only completeness weighting
+        is applied. If callable, it must return sigma(m_true). If ndarray,
+        ``sigma_mag`` must be provided for interpolation.
+    sigma_mag : ndarray, optional
+        Magnitude support for array-like ``sigma``.
+    grid_size : int
+        Number of integration points in true magnitude.
+    normalize : bool
+        If True, return a PDF conditioned on detected sources.
+    '''
+
+    mu = float(np.atleast_1d(mu)[0])
+    mhigh = float(np.atleast_1d(mhigh)[0])
+    Mmax = float(np.atleast_1d(Mmax)[0])
+    m_obs = np.atleast_1d(m_obs)
+    mlow = mu + Mmax
+    m_true = np.linspace(mlow, mhigh, grid_size)
+
+    intrinsic = pnlf(m_true, mu, mhigh, Mmax=Mmax)
+    completeness = completeness_from_mock(m_true, mock_magnitude, recovery_rate)
+    detected = intrinsic * completeness
+
+    detected_norm = np.trapz(detected, m_true)
+    if detected_norm <= 0:
+        return np.zeros_like(m_obs)
+
+    if sigma is None:
+        out = np.interp(m_obs, m_true, detected, left=0, right=0)
+    else:
+        if callable(sigma):
+            sigma_true = np.asarray(sigma(m_true))
+        elif np.isscalar(sigma):
+            sigma_true = np.full_like(m_true, float(sigma), dtype=float)
+        else:
+            sigma = np.asarray(sigma)
+            if sigma_mag is None:
+                raise ValueError('sigma_mag is required when sigma is array-like')
+            sigma_mag = np.asarray(sigma_mag)
+            if len(sigma_mag) != len(sigma):
+                raise ValueError('sigma_mag and sigma must have the same length')
+            order = np.argsort(sigma_mag)
+            sigma_true = np.interp(
+                m_true,
+                sigma_mag[order],
+                sigma[order],
+                left=sigma[order][0],
+                right=sigma[order][-1],
+            )
+
+        sigma_true = np.clip(sigma_true, 1e-6, None)
+        dm = m_obs[:, None] - m_true[None, :]
+        kernel = np.exp(-0.5 * (dm / sigma_true[None, :]) ** 2) / (
+            np.sqrt(2 * np.pi) * sigma_true[None, :]
+        )
+        out = np.trapz(detected[None, :] * kernel, m_true, axis=1)
+
+    if normalize:
+        out = out / detected_norm
+
     return out
 
 def PNLF(bins,mu,mhigh,Mmax=-4.47):
