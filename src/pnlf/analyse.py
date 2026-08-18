@@ -639,7 +639,7 @@ def ccpnlf(
     grid_size=2000,
     normalize=True,
 ):
-    '''Observed PNLF after completeness convolution and optional error convolution.
+    '''Observed PNLF after completeness correction and optional error convolution.
 
     Parameters
     ----------
