@@ -184,7 +184,7 @@ class MaximumLikelihood1D:
        
         #if len(signature(func).parameters)-len(kwargs)!=2:
         #    raise ValueError(f'`func` must have at least one free argument')
-        self.func = func # pnlf or pnlf_convolved
+        self.func = func # pnlf or ccpnlf
 
         logger.info(f'initialize fitter with {len(data)} data points')
         self.data   = data
@@ -202,7 +202,7 @@ class MaximumLikelihood1D:
         if np.any(err):
             self.grid = np.linspace(self.data[idx_low]-width*self.err[idx_low],self.data[idx_high]+width*self.err[idx_high],size)
         
-    def prior(self,*args):
+    def prior(self,*args): #takes args, but we don't use them, because we assume a uniform prior
         '''uniform prior'''
         return 1/len(self.data)
 
@@ -213,16 +213,19 @@ class MaximumLikelihood1D:
         #return -np.sum(np.log([quad(lambda x: self.func(x,param,**self.kwargs)*gaussian(x,d,e),d-5*e,d+5*e)[0] for d,e in zip(self.data,self.err)]))
         
         if np.any(self.err):
+            # for each data point (and associated error), we integrate the product of the model and a gaussian with the data point as mean and the error as sigma.
+            # This is done for all data points and then summed up.
+
             ev = [np.trapz(self.func(self.grid,param,**self.kwargs)*gaussian(self.grid,d,e),self.grid) for d,e in zip(self.data,self.err)]                
             return np.sum(np.log(ev))
-        else:
+        else: # if no errors, no gaussian convolution is needed, we just evaluate the model at the data points
             ev = self.func(self.data,param,**self.kwargs)
             return np.sum(np.log(ev))
         
     def likelihood(self,param):
         '''the evidence multiplied with some prior'''
         
-        return -self.evidence(param) - np.log(self.prior(param)) 
+        return -self.evidence(param) - np.log(self.prior(param)) # prior is uniform, so this is just a constant and does not affect the fit.
         
     def fit(self,guess):
         '''use scipy minimize to find the best parameters'''
@@ -263,7 +266,7 @@ class MaximumLikelihood1D:
 
         return self.x,self.plus,self.minus
 
-    def bootstrap(self,guess,N_boot=100):
+    def bootstrap(self,guess,N_boot=100): # does not get called as part of the fitter or __call__
         '''use bootstraping to estinate the uncertainties'''
 
         loglike = lambda param,data: -np.sum(np.log(self.func(data,param,**self.kwargs)))
@@ -302,7 +305,6 @@ class MaximumLikelihood1D:
         ax1.axvline(self.x_arr[self.low],ls='--',c='k',lw=0.5)
         ax1.axvline(self.x_arr[self.high],ls='--',c='k',lw=0.5)
         
-
         ax1.set_ylabel('likelihood')
         
         ax2.plot(self.x_arr[1:],self.integral,label='cumulative likelihood',color=tab10[2])
@@ -625,7 +627,7 @@ def pnlf_with_completeness(m, mu, mhigh, mock_magnitude, recovery_rate, Mmax=-4.
     return out
 
 
-def pnlf_convolved(
+def ccpnlf(
     m_obs,
     mu,
     mhigh,

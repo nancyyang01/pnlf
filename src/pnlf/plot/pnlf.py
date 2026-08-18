@@ -16,7 +16,7 @@ import astropy.units as u
 
 from scipy.stats import kstest
 
-from ..analyse import PNLF, cdf, pnlf_convolved
+from ..analyse import PNLF, cdf, ccpnlf
 
 basedir = Path(__file__).parent.parent.parent.parent
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _plot_pnlf(data,mu,completeness,mask=None,binsize=0.4,mlow=None,mhigh=None,M
 
 
 def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,Mmax=-4.47,color=tab10[0],alpha=1,ms=2,ax=None,
-                   mock_magnitude=None,recovery_rate=None,sigma=None,convolved_color='tab:green',convolved_ls='-'):
+                   mock_magnitude=None,recovery_rate=None,sigma=None,cc_color='tab:green',cc_ls='-'):
     '''Plot cumulative PNLF
 
     this function plots a minimalistic cumulative PNLF (without labels etc.)
@@ -139,7 +139,7 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
     ax.plot(m_fine[m_fine<completeness],N*cdf(m_fine[m_fine<completeness],mu,completeness),ls=':',color='k',label='original cumulative PNLF')
 
     if mock_magnitude is not None and recovery_rate is not None:
-        pdf = pnlf_convolved(
+        pdf = ccpnlf(
             m_fine,
             mu=mu,
             mhigh=completeness,
@@ -153,9 +153,9 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
         ax.plot(
             m_fine[m_fine<completeness],
             N * cdf_conv[m_fine<completeness],
-            ls=convolved_ls,
-            color=convolved_color,
-            label='convolved cumulative PNLF',
+            ls=cc_ls,
+            color=cc_color,
+            label='completeness corrected cumulative PNLF',
         )
     #ax.plot(data[data<completeness],N*cdf(data[data<completeness],mu,completeness),ls=':',color='k')
 
@@ -195,8 +195,8 @@ def _plot_cum_pnlf(data,mu,completeness=None,binsize=None,mlow=None,mhigh=None,M
 def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,Mmax=-4.47,
               filename=None,color='tab:red',alpha=1,axes=None,
               mock_magnitude=None,recovery_rate=None,sigma=None,
-              convolved_color='tab:green',convolved_ls='-',
-              convolved_cum_color='tab:green',convolved_cum_ls='-'):
+              cc_color='tab:green',cc_ls='-',
+              cc_cum_color='tab:green',cc_cum_ls='-'):
     '''Plot Planetary Nebula Luminosity Function
     
     
@@ -256,7 +256,7 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
         m_fine = (bins_fine[1:]+bins_fine[:-1]) /2
 
         N = len(data[data<completeness])-np.sum(mask)
-        convolved = pnlf_convolved(
+        completeness_corr = ccpnlf(
             m_fine,
             mu=mu,
             mhigh=completeness,
@@ -266,7 +266,7 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
             sigma=sigma,
             normalize=False,
         )
-        ax1.plot(m_fine,binsize*N*convolved,c=convolved_color,ls=convolved_ls,label='convolved fit')
+        ax1.plot(m_fine,binsize*N*completeness_corr,c=cc_color,ls=cc_ls,label='cc fit')
 
     ax2 = _plot_cum_pnlf(
         data[~mask],
@@ -283,8 +283,8 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
         mock_magnitude=mock_magnitude,
         recovery_rate=recovery_rate,
         sigma=sigma,
-        convolved_color=convolved_cum_color,
-        convolved_ls=convolved_cum_ls,
+        cc_color=cc_cum_color,
+        cc_ls=cc_cum_ls,
     )
 
     plt.tight_layout()
@@ -300,7 +300,7 @@ def plot_pnlf(data,mu,completeness,mask=None,binsize=0.25,mlow=None,mhigh=None,M
 def plot_pnlf_diagnostic(data, mu, completeness, mock_magnitude, recovery_rate,
                          mask=None, binsize=0.25, mlow=None, mhigh=None, Mmax=-4.47,
                          sigma=None, filename=None, color='tab:red', alpha=1,
-                         convolved_color='tab:green', convolved_ls='-',
+                         cc_color='tab:green', cc_ls='-',
                          raw_mock_magnitude=None, raw_recovery_rate=None):
     '''Diagnostic plot showing completeness versus magnitude and the PNLF overlay.'''
 
@@ -394,7 +394,7 @@ def plot_pnlf_diagnostic(data, mu, completeness, mock_magnitude, recovery_rate,
 
     ax2.plot(
         m_fine,
-        binsize * N * pnlf_convolved(
+        binsize * N * ccpnlf(
             m_fine,
             mu=mu,
             mhigh=completeness,
@@ -404,9 +404,9 @@ def plot_pnlf_diagnostic(data, mu, completeness, mock_magnitude, recovery_rate,
             sigma=sigma,
             normalize=False,
         ),
-        c=convolved_color,
-        ls=convolved_ls,
-        label='convolved PNLF',
+        c=cc_color,
+        ls=cc_ls,
+        label='ccPNLF',
     )
 
     ax2.axvline(completeness, ls='--', alpha=0.5, color='red')
