@@ -180,7 +180,7 @@ class MaximumLikelihood1D:
        additional fixed key word arguments that are passed to func.
     '''
     
-    def __init__(self,func,data,err=None,prior=None,method='Nelder-Mead',**kwargs):
+    def __init__(self,func,data,err=None, pointing=None, prior=None,method='Nelder-Mead',**kwargs):
        
         #if len(signature(func).parameters)-len(kwargs)!=2:
         #    raise ValueError(f'`func` must have at least one free argument')
@@ -189,37 +189,107 @@ class MaximumLikelihood1D:
         logger.info(f'initialize fitter with {len(data)} data points')
         self.data   = data
         self.err    = err
+        self.pointing = None if pointing is None else np.asarray(pointing)
+
+        if self.pointing is not None:
+            if len(self.pointing) != len(self.data):
+                raise ValueError('`pointing` must have the same length as `data`')
+
+        self.field_completeness = None
+        if self.pointing is not None and 'mock_magnitude' in kwargs and 'recovery_rate' in kwargs:
+            self.field_completeness = self._normalize_field_completeness(
+                kwargs['mock_magnitude'],
+                kwargs['recovery_rate'],
+            )
+            if self.field_completeness is not None:
+                kwargs = dict(kwargs)
+                kwargs.pop('mock_magnitude', None)
+                kwargs.pop('recovery_rate', None)
+
         if prior:
             self.prior = prior
         self.method = method
         self.kwargs = kwargs
-
         width = 5
         size = 1000
         
         idx_low = np.argmin(self.data)
         idx_high = np.argmax(self.data)
-        if np.any(err):
+        if err is not None and np.any(err):
             self.grid = np.linspace(self.data[idx_low]-width*self.err[idx_low],self.data[idx_high]+width*self.err[idx_high],size)
+
+    def _normalize_field_completeness(self, mock_magnitude, recovery_rate):
+        '''Normalize per-field completeness inputs to a label -> curve mapping.'''
+
+        unique_pointings = list(dict.fromkeys(self.pointing.tolist()))
+
+        if isinstance(mock_magnitude, dict) and isinstance(recovery_rate, dict):
+            if set(mock_magnitude) != set(recovery_rate):
+                raise ValueError('`mock_magnitude` and `recovery_rate` must use the same pointing labels')
+            missing = set(unique_pointings) - set(mock_magnitude)
+            if missing:
+                raise ValueError(f'missing completeness data for pointings: {sorted(missing)}')
+            return {
+                label: {'mock_magnitude': mock_magnitude[label], 'recovery_rate': recovery_rate[label]}
+                for label in unique_pointings
+            }
+
+        if isinstance(mock_magnitude, (list, tuple)) and isinstance(recovery_rate, (list, tuple)):
+            if len(mock_magnitude) != len(unique_pointings) or len(recovery_rate) != len(unique_pointings):
+                raise ValueError('per-field completeness inputs must match the number of unique pointings')
+            return {
+                label: {'mock_magnitude': mock_magnitude[i], 'recovery_rate': recovery_rate[i]}
+                for i, label in enumerate(unique_pointings)
+            }
+
+        return None
+
+    def _kwargs_for_pointing(self, pointing=None):
+        kwargs = dict(self.kwargs)
+
+        if pointing is not None and self.field_completeness is not None:
+            completeness = self.field_completeness.get(pointing)
+            if completeness is None:
+                raise ValueError(f'no completeness information available for pointing {pointing!r}')
+            kwargs.update(completeness)
+
+        return kwargs
         
     def prior(self,*args): #takes args, but we don't use them, because we assume a uniform prior
         '''uniform prior'''
         return 1/len(self.data)
 
     def evidence(self,param):
-        '''the evidence is the likelihood of observing the data given the parameter'''
+        '''the evidence is the likelihood of observing the data given the parameter
+            if using the completeness corrected PNLF as the function, 
+            then the ccpnlf will require additional inputs. 
+        '''
         
         # real integration takes way too long
         #return -np.sum(np.log([quad(lambda x: self.func(x,param,**self.kwargs)*gaussian(x,d,e),d-5*e,d+5*e)[0] for d,e in zip(self.data,self.err)]))
         
-        if np.any(self.err):
+        if self.err is not None and np.any(self.err):
             # for each data point (and associated error), we integrate the product of the model and a gaussian with the data point as mean and the error as sigma.
             # This is done for all data points and then summed up.
-
-            ev = [np.trapz(self.func(self.grid,param,**self.kwargs)*gaussian(self.grid,d,e),self.grid) for d,e in zip(self.data,self.err)]                
+            if self.pointing is not None:
+                ev = []
+                for pointing in np.unique(self.pointing):
+                    idx = np.where(self.pointing == pointing)
+                    model = self.func(self.grid, param, **self._kwargs_for_pointing(pointing))
+                    for data_point, data_err in zip(self.data[idx], self.err[idx]):
+                        ev.append(np.trapz(model * gaussian(self.grid, data_point, data_err), self.grid))
+                ev = np.asarray(ev)
+            else:
+                ev = [np.trapz(self.func(self.grid,param,**self.kwargs)*gaussian(self.grid,d,e),self.grid) for d,e in zip(self.data,self.err)]                
             return np.sum(np.log(ev))
         else: # if no errors, no gaussian convolution is needed, we just evaluate the model at the data points
-            ev = self.func(self.data,param,**self.kwargs)
+            if self.pointing is not None:
+                ev = np.empty_like(self.data, dtype=float)
+                for pointing in np.unique(self.pointing):
+                    idx = np.where(self.pointing == pointing)
+                    ev[idx] = self.func(self.data[idx], param, **self._kwargs_for_pointing(pointing))
+            else:
+                ev = self.func(self.data,param,**self.kwargs)
             return np.sum(np.log(ev))
         
     def likelihood(self,param):
