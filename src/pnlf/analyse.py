@@ -669,6 +669,106 @@ def smooth_recovery_curve(mock_magnitude, recovery_rate, recovery_err, lines=3):
 
     return recovery_fn
 
+def smooth_sigmoid_recovery_curve(mock_magnitude, recovery_rate, recovery_err, p0=None):
+    '''Fit a weighted sigmoid recovery curve.
+
+    The returned callable has the same interface and metadata as
+    ``smooth_recovery_curve`` and can be passed to
+    ``completeness_from_mock``.
+    '''
+    from scipy.optimize import curve_fit
+
+    mock_magnitude = np.asarray(mock_magnitude, dtype=float).ravel()
+    recovery_rate = np.asarray(recovery_rate, dtype=float).ravel()
+    recovery_err = np.asarray(recovery_err, dtype=float).ravel()
+
+    if not (
+        len(mock_magnitude) == len(recovery_rate) == len(recovery_err)
+    ):
+        raise ValueError(
+            'mock_magnitude, recovery_rate and recovery_err must have '
+            'the same length'
+        )
+
+    finite = (
+        np.isfinite(mock_magnitude)
+        & np.isfinite(recovery_rate)
+        & np.isfinite(recovery_err)
+    )
+    if not np.any(finite):
+        raise ValueError('No finite values available to fit a recovery curve')
+
+    x = mock_magnitude[finite]
+    y = np.clip(recovery_rate[finite], 0.0, 1.0)
+    err = recovery_err[finite]
+
+    order = np.argsort(x)
+    x, y, err = x[order], y[order], err[order]
+
+    valid_err = np.isfinite(err) & (err > 0)
+    if np.any(valid_err):
+        fallback_err = np.nanmedian(err[valid_err])
+        err = np.where(valid_err, err, fallback_err)
+    else:
+        err = np.ones_like(y)
+
+    ### If more complex models are needed, we can use a sigmoid function with more parameters. For now, we will use a simple two-parameter sigmoid.
+    def sigmoid(m, a, b):
+        exponent = np.clip(a * (m - b), -700, 700)
+        return 1.0 / (1.0 + np.exp(exponent))
+
+    if p0 is None:
+        midpoint_idx = np.argmin(np.abs(y - 0.5))
+        p0 = (1.0, x[midpoint_idx])
+    else:
+        p0 = np.asarray(p0, dtype=float).ravel()
+        if len(p0) != 2:
+            raise ValueError('p0 must contain two values: (a, b)')
+
+    p0 = (max(abs(float(p0[0])), 1e-6), float(p0[1]))
+
+    if len(x) >= 2 and np.ptp(x) > 0:
+        try:
+            parameters, _ = curve_fit(
+                sigmoid,
+                x,
+                y,
+                p0=p0,
+                sigma=err,
+                absolute_sigma=True,
+                bounds=([1e-8, -np.inf], [np.inf, np.inf]),
+                maxfev=10000,
+            )
+        except (RuntimeError, ValueError):
+            logger.warning('Sigmoid fit failed; using initial parameters')
+            parameters = np.asarray(p0)
+    else:
+        parameters = np.asarray(p0)
+
+    a, b = map(float, parameters)
+
+    def recovery_fn(m):
+        scalar_input = np.ndim(m) == 0
+        values = np.atleast_1d(np.asarray(m, dtype=float))
+        output = np.clip(sigmoid(values, a, b), 0.0, 1.0)
+
+        if scalar_input:
+            return float(output[0])
+        return output
+
+    # Keep the same metadata interface as smooth_recovery_curve.
+    recovery_fn.segments = [{
+        'start': float(x[0]),
+        'stop': float(x[-1]),
+        'a': a,
+        'b': b,
+    }]
+    recovery_fn.x_range = (float(x[0]), float(x[-1]))
+    recovery_fn.lines = 1
+    recovery_fn.parameters = (a, b)
+
+    return recovery_fn
+
 
 def pnlf_with_completeness(m, mu, mhigh, mock_magnitude, recovery_rate, Mmax=-4.47, normalize=True):
     '''PNLF multiplied by interpolated recovery rate.
