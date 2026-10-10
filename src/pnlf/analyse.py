@@ -294,6 +294,9 @@ class MaximumLikelihood1D:
         
     def likelihood(self,param):
         '''the evidence multiplied with some prior'''
+        log_evidence = self.evidence(param)
+        if not np.isfinite(log_evidence): # if invalid, set some large but not infinite number to avoid crashing the minimizer
+            return 1e100
         
         return -self.evidence(param) - np.log(self.prior(param)) # prior is uniform, so this is just a constant and does not affect the fit.
         
@@ -669,12 +672,23 @@ def smooth_recovery_curve(mock_magnitude, recovery_rate, recovery_err, lines=3):
 
     return recovery_fn
 
+### If more complex models are needed, we can use a sigmoid function with more parameters. For now, we will use a simple three-parameter sigmoid.
+def sigmoid(m, a, b, c):
+    """A three-parameter sigmoid function.
+    a: The steepness of the curve (range 0.0 to inf).
+    b: The x-value of the sigmoid's midpoint (range -inf to inf).
+    c: The curve's maximum value (range 0.0 to 1.0).
+    """
+    exponent = np.clip(a * (m - b), -700, 700)
+    return c / (1.0 + np.exp(exponent))
+
 def smooth_sigmoid_recovery_curve(mock_magnitude, recovery_rate, recovery_err, p0=None):
     '''Fit a weighted sigmoid recovery curve.
 
     The returned callable has the same interface and metadata as
     ``smooth_recovery_curve`` and can be passed to
     ``completeness_from_mock``.
+    Returns the fitted parameters, and the upper and lower bounds of the 1-sigma confidence interval for each parameter.
     '''
     from scipy.optimize import curve_fit
 
@@ -712,45 +726,34 @@ def smooth_sigmoid_recovery_curve(mock_magnitude, recovery_rate, recovery_err, p
     else:
         err = np.ones_like(y)
 
-    ### If more complex models are needed, we can use a sigmoid function with more parameters. For now, we will use a simple two-parameter sigmoid.
-    def sigmoid(m, a, b):
-        exponent = np.clip(a * (m - b), -700, 700)
-        return 1.0 / (1.0 + np.exp(exponent))
-
     if p0 is None:
         midpoint_idx = np.argmin(np.abs(y - 0.5))
-        p0 = (1.0, x[midpoint_idx])
-    else:
+        p0 = (1.0, x[midpoint_idx], 1.0)
+    else: # check that given p0 is valid
         p0 = np.asarray(p0, dtype=float).ravel()
-        if len(p0) != 2:
-            raise ValueError('p0 must contain two values: (a, b)')
+        if len(p0) != 3:
+            raise ValueError('p0 must contain three values: (a, b, c)')
 
-    p0 = (max(abs(float(p0[0])), 1e-6), float(p0[1]))
+    p0 = (max(abs(float(p0[0])), 1e-6), float(p0[1]), float(p0[2]))
 
-    if len(x) >= 2 and np.ptp(x) > 0:
-        try:
-            parameters, _ = curve_fit(
-                sigmoid,
-                x,
-                y,
-                p0=p0,
-                sigma=err,
-                absolute_sigma=True,
-                bounds=([1e-8, -np.inf], [np.inf, np.inf]),
-                maxfev=10000,
-            )
-        except (RuntimeError, ValueError):
-            logger.warning('Sigmoid fit failed; using initial parameters')
-            parameters = np.asarray(p0)
-    else:
-        parameters = np.asarray(p0)
+    # call curve fit
+    popt, pcov  = curve_fit(
+        sigmoid,
+        x,
+        y,
+        p0=p0,
+        sigma=err,
+        absolute_sigma=True,
+        bounds=([1e-6, -np.inf, 0.0], [np.inf, np.inf, 1.0]),
+        maxfev=10000,
+    )
 
-    a, b = map(float, parameters)
+    a, b, c = map(float, popt)
 
     def recovery_fn(m):
         scalar_input = np.ndim(m) == 0
         values = np.atleast_1d(np.asarray(m, dtype=float))
-        output = np.clip(sigmoid(values, a, b), 0.0, 1.0)
+        output = np.clip(sigmoid(values, a, b, c), 0.0, 1.0)
 
         if scalar_input:
             return float(output[0])
@@ -762,12 +765,14 @@ def smooth_sigmoid_recovery_curve(mock_magnitude, recovery_rate, recovery_err, p
         'stop': float(x[-1]),
         'a': a,
         'b': b,
+        'c': c,
     }]
     recovery_fn.x_range = (float(x[0]), float(x[-1]))
     recovery_fn.lines = 1
-    recovery_fn.parameters = (a, b)
+    recovery_fn.parameters = (a, b, c)
+    recovery_fn.parameter_uncertainties = np.sqrt(np.diag(pcov))
 
-    return recovery_fn
+    return recovery_fn, pcov
 
 
 def pnlf_with_completeness(m, mu, mhigh, mock_magnitude, recovery_rate, Mmax=-4.47, normalize=True):
